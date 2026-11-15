@@ -1,0 +1,447 @@
+name: Build Jarvis APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - name: Create the Jarvis project
+        run: |
+          mkdir -p jarvis/app/src/main/java/com/ishansh/jarvis jarvis/app/src/main/res/values jarvis/app/src/main/res/drawable
+          cat > jarvis/settings.gradle.kts <<'JARVIS_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Jarvis"
+          include(":app")
+          JARVIS_EOF
+          cat > jarvis/build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          JARVIS_EOF
+          cat > jarvis/gradle.properties <<'JARVIS_EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          JARVIS_EOF
+          cat > jarvis/app/build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.ishansh.jarvis"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.ishansh.jarvis"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+          }
+          JARVIS_EOF
+          cat > jarvis/app/src/main/AndroidManifest.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.READ_CONTACTS" />
+              <uses-permission android:name="android.permission.CALL_PHONE" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="Jarvis"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Jarvis">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".JarvisService"
+                      android:exported="false"
+                      android:foregroundServiceType="microphone" />
+              </application>
+          </manifest>
+          JARVIS_EOF
+          cat > jarvis/app/src/main/res/values/themes.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.Jarvis" parent="Theme.AppCompat.NoActionBar" />
+          </resources>
+          JARVIS_EOF
+          cat > jarvis/app/src/main/res/drawable/ic_launcher.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#0B1038" android:pathData="M0,0h108v108h-108z" />
+              <path android:strokeColor="#4DE3FF" android:strokeWidth="6" android:pathData="M54,22a32,32 0 1,0 0.01,0z" />
+              <path android:strokeColor="#F5B301" android:strokeWidth="6" android:pathData="M54,38a16,16 0 1,0 0.01,0z" />
+          </vector>
+          JARVIS_EOF
+          cat > jarvis/app/src/main/java/com/ishansh/jarvis/MainActivity.kt <<'JARVIS_EOF'
+          package com.ishansh.jarvis
+
+          import android.Manifest
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.Switch
+          import android.widget.TextView
+          import android.widget.Toast
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.app.ActivityCompat
+          import androidx.core.content.ContextCompat
+          import androidx.core.widget.doAfterTextChanged
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var reactor: ReactorView
+              private lateinit var status: TextView
+
+              private val perms: Array<String> = buildList {
+                  add(Manifest.permission.RECORD_AUDIO)
+                  add(Manifest.permission.READ_CONTACTS)
+                  add(Manifest.permission.CALL_PHONE)
+                  if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+              }.toTypedArray()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val prefs = getSharedPreferences("jarvis", MODE_PRIVATE)
+                  val dp = resources.displayMetrics.density
+                  fun px(v: Int) = (v * dp).toInt()
+
+                  val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0B1038")) }
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      setPadding(px(20), px(40), px(20), px(70))
+                  }
+                  root.addView(ScrollView(this).apply { addView(col) })
+
+                  col.addView(TextView(this).apply {
+                      text = "J.A.R.V.I.S."
+                      textSize = 28f
+                      setTextColor(Color.parseColor("#4DE3FF"))
+                      typeface = Typeface.DEFAULT_BOLD
+                      letterSpacing = 0.15f
+                      gravity = Gravity.CENTER
+                  })
+
+                  reactor = ReactorView(this)
+                  reactor.setOnClickListener { toggle() }
+                  col.addView(reactor, LinearLayout.LayoutParams(px(260), px(260)).apply { topMargin = px(16) })
+
+                  status = TextView(this).apply {
+                      setTextColor(Color.parseColor("#A9B4D0"))
+                      gravity = Gravity.CENTER
+                      textSize = 15f
+                  }
+                  col.addView(status)
+
+                  fun btn(label: String, action: () -> Unit) {
+                      col.addView(Button(this).apply {
+                          text = label
+                          setOnClickListener { action() }
+                      }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = px(10) })
+                  }
+
+                  btn("1. Allow microphone, contacts and calls") {
+                      ActivityCompat.requestPermissions(this, perms, 1)
+                  }
+                  btn("2. Allow display over other apps") {
+                      if (Settings.canDrawOverlays(this)) {
+                          Toast.makeText(this, "Already allowed", Toast.LENGTH_SHORT).show()
+                      } else {
+                          startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                      }
+                  }
+                  btn("3. Allow background running") {
+                      val pm = getSystemService(PowerManager::class.java)
+                      if (pm.isIgnoringBatteryOptimizations(packageName)) {
+                          Toast.makeText(this, "Already allowed", Toast.LENGTH_SHORT).show()
+                      } else {
+                          startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                      }
+                  }
+
+                  col.addView(EditText(this).apply {
+                      hint = "Paste your free Gemini API key"
+                      setHintTextColor(Color.GRAY)
+                      setTextColor(Color.WHITE)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setText(prefs.getString("key", ""))
+                      doAfterTextChanged { prefs.edit().putString("key", it.toString().trim()).apply() }
+                  }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = px(14) })
+
+                  col.addView(Switch(this).apply {
+                      text = "Deeper voice (restart Jarvis after changing)"
+                      setTextColor(Color.WHITE)
+                      isChecked = prefs.getBoolean("deep", true)
+                      setOnCheckedChangeListener { _, checked -> prefs.edit().putBoolean("deep", checked).apply() }
+                  }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = px(14) })
+
+                  root.addView(TextView(this).apply {
+                      text = "Created by Ishansh Sharma"
+                      setTextColor(Color.parseColor("#F5B301"))
+                      typeface = Typeface.DEFAULT_BOLD
+                      textSize = 13f
+                      setPadding(px(12), px(6), px(12), px(6))
+                  }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END).apply {
+                      setMargins(0, 0, px(10), px(10))
+                  })
+
+                  setContentView(root)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+              }
+
+              private fun hasPerms() = perms.all {
+                  ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+              }
+
+              private fun toggle() {
+                  val svc = Intent(this, JarvisService::class.java)
+                  if (JarvisService.running) {
+                      stopService(svc)
+                  } else {
+                      if (!hasPerms()) {
+                          status.text = "Tap button 1 first and allow everything."
+                          return
+                      }
+                      ContextCompat.startForegroundService(this, svc)
+                  }
+                  reactor.postDelayed({ refresh() }, 400)
+              }
+
+              private fun refresh() {
+                  reactor.active = JarvisService.running
+                  status.text = if (JarvisService.running) "Listening in the background. Say \"Hi Jarvis\"." else "Tap the reactor to start Jarvis."
+              }
+
+              override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  refresh()
+              }
+          }
+          JARVIS_EOF
+          cat > jarvis/app/src/main/java/com/ishansh/jarvis/JarvisService.kt <<'JARVIS_EOF'
+          package com.ishansh.jarvis
+
+          import android.Manifest
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.pm.ServiceInfo
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.provider.ContactsContract
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import androidx.core.app.NotificationCompat
+          import androidx.core.app.ServiceCompat
+          import androidx.core.content.ContextCompat
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.net.URLEncoder
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import kotlin.concurrent.thread
+
+          class JarvisService : Service(), TextToSpeech.OnInitListener {
+
+              companion object {
+                  @Volatile
+                  var running = false
+              }
+
+              private enum class Mode { WAKE, COMMAND, CONFIRM }
+
+              private var mode = Mode.WAKE
+              private var recognizer: SpeechRecognizer? = null
+              private var tts: TextToSpeech? = null
+              private val main = Handler(Looper.getMainLooper())
+              private var pending: (() -> Unit)? = null
+              private var afterSpeech: () -> Unit = { listen() }
+              private var speaking = false
+              private val history = JSONArray()
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+              override fun onCreate() {
+                  super.onCreate()
+                  running = true
+                  val channel = "jarvis"
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      getSystemService(NotificationManager::class.java)
+                          .createNotificationChannel(NotificationChannel(channel, "Jarvis", NotificationManager.IMPORTANCE_LOW))
+                  }
+                  val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+                  val note = NotificationCompat.Builder(this, channel)
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("Jarvis is listening")
+                      .setContentText("Say \"Hi Jarvis\"")
+                      .setContentIntent(open)
+                      .setOngoing(true)
+                      .build()
+                  ServiceCompat.startForeground(this, 1, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  tts = TextToSpeech(this, this)
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  main.removeCallbacksAndMessages(null)
+                  recognizer?.destroy()
+                  tts?.shutdown()
+                  super.onDestroy()
+              }
+
+              // ---------- Voice out ----------
+
+              override fun onInit(status: Int) {
+                  val t = tts ?: return
+                  t.language = Locale.US
+                  val deep = getSharedPreferences("jarvis", MODE_PRIVATE).getBoolean("deep", true)
+                  t.setPitch(if (deep) 0.8f else 1f)
+                  t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
+                      override fun onDone(utteranceId: String?) { main.post { finishSpeech() } }
+                      @Deprecated("Deprecated in Java")
+                      override fun onError(utteranceId: String?) { main.post { finishSpeech() } }
+                  })
+                  say("Jarvis is online.")
+              }
+
+              private fun finishSpeech() {
+                  speaking = false
+                  val next = afterSpeech
+                  afterSpeech = { listen() }
+                  next()
+              }
+
+              private fun say(text: String, after: () -> Unit = { listen() }) {
+                  recognizer?.cancel()
+                  speaking = true
+                  afterSpeech = after
+                  tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jv")
+              }
+
+              // ---------- Voice in ----------
+
+              private val listener = object : RecognitionListener {
+                  override fun onReadyForSpeech(params: Bundle?) {}
+                  override fun onBeginningOfSpeech() {}
+                  override fun onRmsChanged(rmsdB: Float) {}
+                  override fun onBufferReceived(buffer: ByteArray?) {}
+                  override fun onEndOfSpeech() {}
+                  override fun onPartialResults(partialResults: Bundle?) {}
+                  override fun onEvent(eventType: Int, params: Bundle?) {}
+
+                  override fun onResults(results: Bundle?) {
+                      val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull() ?: ""
+                      handleText(text)
+                  }
+
+                  override fun onError(error: Int) {
+                      if (mode != Mode.WAKE && (error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_NO_MATCH)) {
+                          mode = Mode.WAKE
+                          pending = null
+                      }
+                      va
