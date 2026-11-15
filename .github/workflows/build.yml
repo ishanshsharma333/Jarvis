@@ -1,0 +1,157 @@
+name: Build Jarvis APK
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+      - name: Accept Android licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+      - name: Create the Jarvis project
+        run: |
+          D=jarvis/app/src/main
+          mkdir -p $D/java/com/ishansh/jarvis $D/res/values $D/res/drawable
+          cp src/*.kt $D/java/com/ishansh/jarvis/
+          cat > jarvis/settings.gradle.kts <<'JARVIS_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Jarvis"
+          include(":app")
+          JARVIS_EOF
+          cat > jarvis/build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application") version "8.2.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+          }
+          JARVIS_EOF
+          cat > jarvis/gradle.properties <<'JARVIS_EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          JARVIS_EOF
+          cat > jarvis/app/build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.ishansh.jarvis"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.ishansh.jarvis"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.12.0")
+              implementation("androidx.appcompat:appcompat:1.6.1")
+          }
+          JARVIS_EOF
+          cat > jarvis/app/src/main/AndroidManifest.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.READ_CONTACTS" />
+              <uses-permission android:name="android.permission.CALL_PHONE" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="Jarvis"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Jarvis">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".JarvisService"
+                      android:exported="false"
+                      android:foregroundServiceType="microphone" />
+              </application>
+          </manifest>
+          JARVIS_EOF
+          cat > jarvis/app/src/main/res/values/themes.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.Jarvis" parent="Theme.AppCompat.NoActionBar" />
+          </resources>
+          JARVIS_EOF
+          cat > jarvis/app/src/main/res/drawable/ic_launcher.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#0B1038" android:pathData="M0,0h108v108h-108z" />
+              <path android:strokeColor="#4DE3FF" android:strokeWidth="6" android:pathData="M54,22a32,32 0 1,0 0.01,0z" />
+              <path android:strokeColor="#F5B301" android:strokeWidth="6" android:pathData="M54,38a16,16 0 1,0 0.01,0z" />
+          </vector>
+          JARVIS_EOF
+      - name: Build the app
+        working-directory: jarvis
+        run: gradle assembleDebug --no-daemon
+      - name: Publish the APK as a download
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: jarvis-${{ github.run_number }}
+          name: Jarvis app ${{ github.run_number }}
+          files: jarvis/app/build/outputs/apk/debug/app-debug.apk
