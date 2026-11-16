@@ -226,32 +226,83 @@ class JarvisService : Service(), TextToSpeech.OnInitListener {
             .put("contents", history)
             .toString()
 
-        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite")
-        var lastError = "Unknown error"
-        for (model in models) {
-            val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
-            c.requestMethod = "POST"
-            c.setRequestProperty("Content-Type", "application/json")
-            c.setRequestProperty("x-goog-api-key", key)
-            c.doOutput = true
-            c.connectTimeout = 15000
-            c.readTimeout = 25000
-            c.outputStream.use { it.write(body.toByteArray()) }
-            val code = c.responseCode
-            val resp = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
-            if (code in 200..299) {
-                val out = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
-                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-                history.put(JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", out))))
-                return out
-            }
-            lastError = try {
-                JSONObject(resp).getJSONObject("error").getString("message")
-            } catch (e: Exception) {
-                "Google returned error $code"
-            }
+        val prefs = getSharedPreferences("jarvis", MODE_PRIVATE)
+        val saved = prefs.getString("model", null)
+        var lastError = "No Gemini model worked."
+
+        if (saved != null) {
+            val r = tryModel(key, saved, body)
+            if (r.first) return remember(r.second)
+            lastError = r.second
         }
+        for (model in candidateModels(key)) {
+            if (model == saved) continue
+            val r = tryModel(key, model, body)
+            if (r.first) {
+                prefs.edit().putString("model", model).apply()
+                return remember(r.second)
+            }
+            lastError = r.second
+        }
+        prefs.edit().remove("model").apply()
         throw Exception(lastError)
+    }
+
+    private fun remember(out: String): String {
+        history.put(JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", out))))
+        return out
+    }
+
+    // Asks Google which Flash models this key can use, newest first.
+    private fun candidateModels(key: String): List<String> {
+        val found = ArrayList<String>()
+        try {
+            val c = URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200").openConnection() as HttpURLConnection
+            c.setRequestProperty("x-goog-api-key", key)
+            c.connectTimeout = 15000
+            c.readTimeout = 20000
+            if (c.responseCode in 200..299) {
+                val arr = JSONObject(c.inputStream.bufferedReader().readText()).getJSONArray("models")
+                val skip = listOf("tts", "image", "live", "audio", "embedding", "robotics", "computer", "native", "thinking")
+                for (i in 0 until arr.length()) {
+                    val m = arr.getJSONObject(i)
+                    val name = m.getString("name").removePrefix("models/")
+                    val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
+                    if (name.startsWith("gemini-") && name.contains("flash") &&
+                        methods.contains("generateContent") && skip.none { name.contains(it) }
+                    ) found.add(name)
+                }
+            }
+        } catch (e: Exception) {
+        }
+        fun version(n: String): Double =
+            Regex("""gemini-(\d+(?:\.\d+)?)""").find(n)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+        val sorted = found.sortedWith(compareByDescending<String> { version(it) }.thenBy { it.contains("lite") })
+        return (sorted + listOf("gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash")).distinct().take(8)
+    }
+
+    private fun tryModel(key: String, model: String, body: String): Pair<Boolean, String> {
+        val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
+        c.requestMethod = "POST"
+        c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("x-goog-api-key", key)
+        c.doOutput = true
+        c.connectTimeout = 15000
+        c.readTimeout = 25000
+        c.outputStream.use { it.write(body.toByteArray()) }
+        val code = c.responseCode
+        val resp = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
+        if (code in 200..299) {
+            val out = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
+                .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+            return Pair(true, out)
+        }
+        val msg = try {
+            JSONObject(resp).getJSONObject("error").getString("message")
+        } catch (e: Exception) {
+            "Google returned error $code"
+        }
+        return Pair(false, msg)
     }
 
     // ---------- Actions ----------
