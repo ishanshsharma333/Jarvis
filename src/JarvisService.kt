@@ -27,7 +27,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -191,7 +190,7 @@ class JarvisService : Service(), TextToSpeech.OnInitListener {
 
     private fun think(text: String) {
         mode = Mode.WAKE
-        val key = getSharedPreferences("jarvis", MODE_PRIVATE).getString("key", "") ?: ""
+        val key = (getSharedPreferences("jarvis", MODE_PRIVATE).getString("key", "") ?: "").trim()
         if (key.isBlank()) {
             say("Please add your Gemini key in the Jarvis app.")
             return
@@ -201,7 +200,7 @@ class JarvisService : Service(), TextToSpeech.OnInitListener {
             val reply = try {
                 askGemini(key, text)
             } catch (e: Exception) {
-                "Sorry, I couldn't reach the internet."
+                "Sorry. " + (e.message ?: "Something went wrong.").take(140)
             }
             main.post { act(reply) }
         }
@@ -225,21 +224,34 @@ class JarvisService : Service(), TextToSpeech.OnInitListener {
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", history)
+            .toString()
 
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + URLEncoder.encode(key, "UTF-8"))
-        val c = url.openConnection() as HttpURLConnection
-        c.requestMethod = "POST"
-        c.setRequestProperty("Content-Type", "application/json")
-        c.doOutput = true
-        c.connectTimeout = 15000
-        c.readTimeout = 20000
-        c.outputStream.use { it.write(body.toString().toByteArray()) }
-        val stream = if (c.responseCode in 200..299) c.inputStream else c.errorStream
-        val resp = stream.bufferedReader().readText()
-        val out = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
-            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-        history.put(JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", out))))
-        return out
+        val models = listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite")
+        var lastError = "Unknown error"
+        for (model in models) {
+            val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
+            c.requestMethod = "POST"
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("x-goog-api-key", key)
+            c.doOutput = true
+            c.connectTimeout = 15000
+            c.readTimeout = 25000
+            c.outputStream.use { it.write(body.toByteArray()) }
+            val code = c.responseCode
+            val resp = (if (code in 200..299) c.inputStream else c.errorStream).bufferedReader().readText()
+            if (code in 200..299) {
+                val out = JSONObject(resp).getJSONArray("candidates").getJSONObject(0)
+                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                history.put(JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", out))))
+                return out
+            }
+            lastError = try {
+                JSONObject(resp).getJSONObject("error").getString("message")
+            } catch (e: Exception) {
+                "Google returned error $code"
+            }
+        }
+        throw Exception(lastError)
     }
 
     // ---------- Actions ----------
